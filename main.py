@@ -348,9 +348,12 @@ async def fetch(request: Request):
             if code:
                 return http_response(code, process_id, 200)
 
-            log_process("Waiting for confirm form...", process_id)
-            action = await submit_authorize(page, timeout_input)
-            log_process(f"Confirm form submitted via {action}", process_id)
+            try:
+                log_process("Waiting for confirm form...", process_id)
+                action = await submit_authorize(page, 8000)
+                log_process(f"Confirm form submitted via {action}", process_id)
+            except Exception:
+                log_process("No confirm form appeared, continuing...", process_id)
 
             log_process("Waiting for code capture...", process_id)
             code = await wait_for_code(captured, page, timeout_page)
