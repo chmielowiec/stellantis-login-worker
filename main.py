@@ -379,8 +379,10 @@ async def fetch(request: Request):
             password_input = await wait_visible(login_frame, PASSWORD_SELECTORS, timeout_input)
 
             log_process("Filling credentials...", process_id)
-            await email_input.fill(email)
-            await password_input.fill(password)
+            # Gigya's risk-based auth can silently reject logins that look automated;
+            # per-keystroke input mimics real typing instead of an instant CDP value set.
+            await email_input.press_sequentially(email, delay=50)
+            await password_input.press_sequentially(password, delay=50)
 
             log_process("Submitting login form...", process_id)
             login_button = await wait_visible(login_frame, LOGIN_BUTTON_SELECTORS, timeout_input)
