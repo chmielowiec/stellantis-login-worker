@@ -26,6 +26,7 @@ browser = None
 browser_lock = asyncio.Lock()
 
 EMAIL_SELECTORS = [
+    '#gigya-login-form input[name="loginID"]',
     '#gigya-login-form input[name="username"]',
     'input[name="username"]',
     'input[name="loginID"]',
@@ -194,16 +195,22 @@ async def click_optional(page, selectors, timeout_ms=1500):
 
 
 async def wait_visible(page, selectors, timeout_ms):
+    deadline = time.monotonic() + timeout_ms / 1000
     last_error = None
-    per_selector_timeout = max(1500, min(timeout_ms, 10000))
-    for selector in selectors:
-        locator = page.locator(selector).first
-        try:
-            await locator.wait_for(state="visible", timeout=per_selector_timeout)
-            return locator
-        except Exception as exc:
-            last_error = exc
-            continue
+
+    while time.monotonic() < deadline:
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                for match_index in range(await locator.count()):
+                    candidate = locator.nth(match_index)
+                    if await candidate.is_visible():
+                        return candidate
+            except Exception as exc:
+                last_error = exc
+
+        await asyncio.sleep(0.25)
+
     raise TimeoutError(f"No visible selector found: {selectors}") from last_error
 
 
@@ -320,6 +327,13 @@ async def fetch(request: Request):
             page.on("request", lambda req: maybe_capture(req.url))
             page.on("requestfailed", lambda req: maybe_capture(req.url))
             page.on("framenavigated", lambda frame: maybe_capture(frame.url))
+
+            async def on_response(response):
+                location = await response.header_value("location")
+                if location:
+                    maybe_capture(location)
+
+            page.on("response", on_response)
 
             log_process(f"Navigating to login: {redacted_url(url)}", process_id)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_page)
