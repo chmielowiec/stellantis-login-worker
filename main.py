@@ -188,13 +188,14 @@ def http_response(message, process_id, status=400):
 
 
 async def click_optional(page, selectors, timeout_ms=1500):
-    for selector in selectors:
-        locator = page.locator(selector).first
-        try:
-            await locator.click(timeout=timeout_ms)
-            return
-        except Exception:
-            continue
+    for frame in page.frames:
+        for selector in selectors:
+            locator = frame.locator(selector).first
+            try:
+                await locator.click(timeout=timeout_ms)
+                return
+            except Exception:
+                continue
 
 
 async def wait_visible(page, selectors, timeout_ms):
@@ -202,15 +203,18 @@ async def wait_visible(page, selectors, timeout_ms):
     last_error = None
 
     while time.monotonic() < deadline:
-        for selector in selectors:
-            locator = page.locator(selector)
-            try:
-                for match_index in range(await locator.count()):
-                    candidate = locator.nth(match_index)
-                    if await candidate.is_visible():
-                        return candidate
-            except Exception as exc:
-                last_error = exc
+        # Gigya login/consent widgets are sometimes rendered inside a child iframe
+        # rather than the top-level page, so all frames must be searched.
+        for frame in page.frames:
+            for selector in selectors:
+                locator = frame.locator(selector)
+                try:
+                    for match_index in range(await locator.count()):
+                        candidate = locator.nth(match_index)
+                        if await candidate.is_visible():
+                            return candidate
+                except Exception as exc:
+                    last_error = exc
 
         await asyncio.sleep(0.25)
 
@@ -335,7 +339,11 @@ async def fetch(request: Request):
             page.on("framenavigated", lambda frame: maybe_capture(frame.url))
 
             async def on_response(response):
-                location = await response.header_value("location")
+                # Response events can still fire after the context is closed (finally block).
+                try:
+                    location = await response.header_value("location")
+                except Exception:
+                    return
                 if location:
                     maybe_capture(location)
 
