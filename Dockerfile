@@ -1,34 +1,17 @@
 FROM python:3.11-slim
 
-# Evita prompt interattivi
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Dipendenze di sistema per Chromium
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libxshmfence1 \
-    libdrm2 \
-    fonts-liberation \
-    ca-certificates \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-RUN playwright install --with-deps chromium
+# playwright install --with-deps already pulls every system lib chromium needs;
+# apt/pip caches must be purged in this same layer or they stay in the image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY main.py .
 
