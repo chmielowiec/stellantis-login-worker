@@ -198,13 +198,34 @@ async def click_optional(page, selectors, timeout_ms=1500):
                 continue
 
 
-async def wait_visible(page, selectors, timeout_ms):
+async def wait_visible(container, selectors, timeout_ms):
     deadline = time.monotonic() + timeout_ms / 1000
     last_error = None
 
     while time.monotonic() < deadline:
-        # Gigya login/consent widgets are sometimes rendered inside a child iframe
-        # rather than the top-level page, so all frames must be searched.
+        for selector in selectors:
+            locator = container.locator(selector)
+            try:
+                for match_index in range(await locator.count()):
+                    candidate = locator.nth(match_index)
+                    if await candidate.is_visible():
+                        return candidate
+            except Exception as exc:
+                last_error = exc
+
+        await asyncio.sleep(0.25)
+
+    raise TimeoutError(f"No visible selector found: {selectors}") from last_error
+
+
+async def find_visible_frame(page, selectors, timeout_ms):
+    # Returns (frame, candidate); used once to pin down which frame holds the
+    # live Gigya form, so password/submit lookups can stay scoped to it and not
+    # accidentally resolve to a different matching frame.
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_error = None
+
+    while time.monotonic() < deadline:
         for frame in page.frames:
             for selector in selectors:
                 locator = frame.locator(selector)
@@ -212,7 +233,7 @@ async def wait_visible(page, selectors, timeout_ms):
                     for match_index in range(await locator.count()):
                         candidate = locator.nth(match_index)
                         if await candidate.is_visible():
-                            return candidate
+                            return frame, candidate
                 except Exception as exc:
                     last_error = exc
 
@@ -233,7 +254,7 @@ async def save_debug_artifacts(page, process_id, stage):
 
 async def submit_authorize(page, timeout_ms):
     try:
-        button = await wait_visible(page, AUTHORIZE_BUTTON_SELECTORS, timeout_ms)
+        _, button = await find_visible_frame(page, AUTHORIZE_BUTTON_SELECTORS, timeout_ms)
         await button.click()
         return "clicked_visible_button"
     except Exception:
@@ -354,15 +375,15 @@ async def fetch(request: Request):
             await click_optional(page, COOKIE_BUTTON_SELECTORS)
 
             log_process("Waiting for login form...", process_id)
-            email_input = await wait_visible(page, EMAIL_SELECTORS, timeout_input)
-            password_input = await wait_visible(page, PASSWORD_SELECTORS, timeout_input)
+            login_frame, email_input = await find_visible_frame(page, EMAIL_SELECTORS, timeout_input)
+            password_input = await wait_visible(login_frame, PASSWORD_SELECTORS, timeout_input)
 
             log_process("Filling credentials...", process_id)
             await email_input.fill(email)
             await password_input.fill(password)
 
             log_process("Submitting login form...", process_id)
-            login_button = await wait_visible(page, LOGIN_BUTTON_SELECTORS, timeout_input)
+            login_button = await wait_visible(login_frame, LOGIN_BUTTON_SELECTORS, timeout_input)
             await login_button.click()
 
             log_process("Waiting for redirects...", process_id)
