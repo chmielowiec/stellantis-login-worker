@@ -28,6 +28,12 @@ browser_lock = asyncio.Lock()
 EMAIL_SELECTORS = [
     '#gigya-login-form input[name="loginID"]',
     '#gigya-login-form input[name="username"]',
+    # Attribute-agnostic but still scoped to the real form, since the exact
+    # name attribute varies and falling through to an unscoped selector below
+    # can match an unrelated input elsewhere on the page (confirmed in logs:
+    # picked one of 3 stray input[name="username"] matches, not the real field).
+    '#gigya-login-form input[type="email"]',
+    '#gigya-login-form input[type="text"]',
     'input[name="username"]',
     'input[name="loginID"]',
     'input[name="email"]',
