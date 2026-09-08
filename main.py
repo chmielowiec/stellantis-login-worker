@@ -206,10 +206,11 @@ async def wait_visible(container, selectors, timeout_ms):
         for selector in selectors:
             locator = container.locator(selector)
             try:
-                for match_index in range(await locator.count()):
+                count = await locator.count()
+                for match_index in range(count):
                     candidate = locator.nth(match_index)
                     if await candidate.is_visible():
-                        return candidate
+                        return candidate, selector, count
             except Exception as exc:
                 last_error = exc
 
@@ -219,7 +220,7 @@ async def wait_visible(container, selectors, timeout_ms):
 
 
 async def find_visible_frame(page, selectors, timeout_ms):
-    # Returns (frame, candidate); used once to pin down which frame holds the
+    # Returns (frame, candidate, selector, count); used once to pin down which frame holds the
     # live Gigya form, so password/submit lookups can stay scoped to it and not
     # accidentally resolve to a different matching frame.
     deadline = time.monotonic() + timeout_ms / 1000
@@ -230,10 +231,11 @@ async def find_visible_frame(page, selectors, timeout_ms):
             for selector in selectors:
                 locator = frame.locator(selector)
                 try:
-                    for match_index in range(await locator.count()):
+                    count = await locator.count()
+                    for match_index in range(count):
                         candidate = locator.nth(match_index)
                         if await candidate.is_visible():
-                            return frame, candidate
+                            return frame, candidate, selector, count
                 except Exception as exc:
                     last_error = exc
 
@@ -254,7 +256,7 @@ async def save_debug_artifacts(page, process_id, stage):
 
 async def submit_authorize(page, timeout_ms):
     try:
-        _, button = await find_visible_frame(page, AUTHORIZE_BUTTON_SELECTORS, timeout_ms)
+        _, button, _, _ = await find_visible_frame(page, AUTHORIZE_BUTTON_SELECTORS, timeout_ms)
         await button.click()
         return "clicked_visible_button"
     except Exception:
@@ -375,17 +377,28 @@ async def fetch(request: Request):
             await click_optional(page, COOKIE_BUTTON_SELECTORS)
 
             log_process("Waiting for login form...", process_id)
-            login_frame, email_input = await find_visible_frame(page, EMAIL_SELECTORS, timeout_input)
-            password_input = await wait_visible(login_frame, PASSWORD_SELECTORS, timeout_input)
+            login_frame, email_input, email_selector, email_count = await find_visible_frame(page, EMAIL_SELECTORS, timeout_input)
+            password_input, password_selector, password_count = await wait_visible(login_frame, PASSWORD_SELECTORS, timeout_input)
+            logger.warning(
+                "[%s] login form frame=%s email_selector=%r (%d match) password_selector=%r (%d match)",
+                process_id, redacted_url(login_frame.url), email_selector, email_count, password_selector, password_count,
+            )
 
             log_process("Filling credentials...", process_id)
             # Gigya's risk-based auth can silently reject logins that look automated;
             # per-keystroke input mimics real typing instead of an instant CDP value set.
             await email_input.press_sequentially(email, delay=50)
             await password_input.press_sequentially(password, delay=50)
+            typed_email = await email_input.input_value()
+            typed_password_len = len(await password_input.input_value())
+            logger.warning(
+                "[%s] post-type email_matches=%s password_len=%d (expected %d)",
+                process_id, typed_email == email, typed_password_len, len(password),
+            )
 
             log_process("Submitting login form...", process_id)
-            login_button = await wait_visible(login_frame, LOGIN_BUTTON_SELECTORS, timeout_input)
+            login_button, button_selector, button_count = await wait_visible(login_frame, LOGIN_BUTTON_SELECTORS, timeout_input)
+            logger.warning("[%s] login button_selector=%r (%d match)", process_id, button_selector, button_count)
             await login_button.click()
 
             log_process("Waiting for redirects...", process_id)
