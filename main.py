@@ -141,7 +141,10 @@ async def start_browser():
             "--disable-default-apps",
             "--mute-audio",
             "--no-first-run",
-            "--no-zygote"
+            "--no-zygote",
+            # navigator.webdriver otherwise flags us as automation to bot detection,
+            # which can cause login pages to withhold the expected form.
+            "--disable-blink-features=AutomationControlled"
         ],
     )
     log_start_browser()
@@ -296,6 +299,9 @@ async def fetch(request: Request):
                 bypass_csp=True,
                 ignore_https_errors=True,
             )
+            # Chromium still exposes navigator.webdriver=true by default even with
+            # --disable-blink-features=AutomationControlled; mask it too.
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             page = await context.new_page()
             page.set_default_timeout(timeout_input)
