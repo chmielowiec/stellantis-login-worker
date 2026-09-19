@@ -52,13 +52,6 @@ LOGIN_BUTTON_SELECTORS = [
 ]
 AUTHORIZE_BUTTON_SELECTORS = [
     "#consentbutton",
-    '#cvs_from input[type="submit"]',
-    '#cvs_from button[type="submit"]',
-    '#cvs_form input[type="submit"]',
-    '#cvs_form button[type="submit"]',
-    'form input[type="submit"]',
-    'form button[type="submit"]',
-    'button[type="submit"]',
 ]
 COOKIE_BUTTON_SELECTORS = [
     '#onetrust-accept-btn-handler',
@@ -250,6 +243,21 @@ async def find_visible_frame(page, selectors, timeout_ms):
     raise TimeoutError(f"No visible selector found: {selectors}") from last_error
 
 
+async def find_visible_frame_now(page, selectors):
+    for frame in page.frames:
+        for selector in selectors:
+            locator = frame.locator(selector)
+            try:
+                count = await locator.count()
+                for match_index in range(count):
+                    candidate = locator.nth(match_index)
+                    if await candidate.is_visible():
+                        return frame, candidate, selector, count
+            except Exception:
+                continue
+    return None
+
+
 async def save_debug_artifacts(page, process_id, stage):
     safe_stage = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in stage)
     try:
@@ -258,31 +266,6 @@ async def save_debug_artifacts(page, process_id, stage):
             handle.write(await page.content())
     except Exception:
         logger.exception("[%s] failed saving debug artifacts", process_id)
-
-
-async def submit_authorize(page, timeout_ms):
-    try:
-        _, button, _, _ = await find_visible_frame(page, AUTHORIZE_BUTTON_SELECTORS, timeout_ms)
-        await button.click()
-        return "clicked_visible_button"
-    except Exception:
-        submitted = await page.evaluate(
-            """() => {
-                const form = document.querySelector(
-                    '#cvs_from, #cvs_form, form[action*="/oauth2/authorize"], form'
-                );
-                if (!form) return false;
-                if (typeof form.requestSubmit === 'function') {
-                    form.requestSubmit();
-                } else {
-                    HTMLFormElement.prototype.submit.call(form);
-                }
-                return true;
-            }"""
-        )
-        if submitted:
-            return "submitted_form"
-        raise
 
 
 async def wait_for_code(captured, page, timeout_ms):
@@ -296,6 +279,22 @@ async def wait_for_code(captured, page, timeout_ms):
             return code
         await asyncio.sleep(0.2)
     return None
+
+
+async def wait_for_code_or_authorize(captured, page, timeout_ms):
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        code = captured["code"] or extract_code(page.url)
+        if code:
+            captured["code"] = code
+            return code, None
+
+        authorize = await find_visible_frame_now(page, AUTHORIZE_BUTTON_SELECTORS)
+        if authorize:
+            return None, authorize
+
+        await asyncio.sleep(0.2)
+    return None, None
 
 
 @app.post("/")
@@ -414,22 +413,21 @@ async def fetch(request: Request):
                 if not captured["code"]:
                     raise
 
-            code = await wait_for_code(captured, page, 2500)
+            log_process("Waiting for code or consent form...", process_id)
+            code, authorize = await wait_for_code_or_authorize(captured, page, timeout_page)
             if code:
                 return http_response(code, process_id, 200)
 
-            try:
-                log_process("Waiting for confirm form...", process_id)
-                action = await submit_authorize(page, 8000)
-                log_process(f"Confirm form submitted via {action}", process_id)
-            except Exception:
-                log_process("No confirm form appeared, continuing...", process_id)
-
-            log_process("Waiting for code capture...", process_id)
-            code = await wait_for_code(captured, page, timeout_page)
-
-            if code:
-                return http_response(code, process_id, 200)
+            if authorize:
+                _, authorize_button, authorize_selector, authorize_count = authorize
+                logger.warning(
+                    "[%s] authorize selector=%r (%d match)",
+                    process_id, authorize_selector, authorize_count,
+                )
+                await authorize_button.click()
+                code = await wait_for_code(captured, page, timeout_page)
+                if code:
+                    return http_response(code, process_id, 200)
 
             await save_debug_artifacts(page, process_id, "missing-code")
             try:
